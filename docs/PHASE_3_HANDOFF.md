@@ -117,17 +117,15 @@ PENDING → CLAIMED → EXTRACTING → COMPLETED
 Non-terminal states: PENDING, CLAIMED, EXTRACTING
 Terminal states: COMPLETED, FAILED
 
+### Atomic Job Claiming
+The future Python worker must claim jobs atomically using `FOR UPDATE SKIP LOCKED`.
+Because newly created jobs have a `NULL` lease, the worker MUST use the following eligibility logic:
+`(status = 'PENDING' AND locked_until IS NULL) OR (status IN ('CLAIMED', 'EXTRACTING') AND locked_until < NOW())`
+
 ## Lease / Heartbeat Model
 
-A job is reclaimable when:
-```sql
-status NOT IN ('COMPLETED', 'FAILED')
-AND locked_until < NOW()
-AND attempt_count < max_attempts
-```
-
 The future worker should:
-1. Claim a job: `SELECT ... FOR UPDATE SKIP LOCKED WHERE status = 'PENDING' AND locked_until < NOW()`
+1. Claim a job atomically using `FOR UPDATE SKIP LOCKED` and the eligibility logic above
 2. Increment `attempt_count`, set `locked_by`, set `locked_until` to now + lease duration
 3. Periodically renew `locked_until` (heartbeat) while working
 4. On completion: set status to COMPLETED, update content with extracted metadata
@@ -141,12 +139,14 @@ The future worker should:
 4. Extracted text/transcript (stored as .txt or .json in Storage)
 5. AI knowledge (summary, key points, notes — derived from evidence)
 
-## Future Evidence Storage Path
-
-```
-evidence bucket: {user_id}/{content_id}/evidence.txt
-                 {user_id}/{content_id}/evidence.json
-```
+### Evidence Storage Model
+Evidence is stored immutably per-job-run. The worker MUST NOT use a flat directory structure.
+All artifacts must be uploaded to the following path:
+`evidence/<user_id>/<content_id>/runs/<job_id>/`
+This directory must contain:
+1. `source.raw`
+2. `extracted.json`
+3. `manifest.json`
 
 The evidence bucket is private. Storage policies ensure users can only access objects inside their own user folder (`storage.foldername(name)[1] = auth.uid()::text`).
 
